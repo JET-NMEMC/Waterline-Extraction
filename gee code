@@ -44,7 +44,7 @@ var panel = ui.Panel({
 
 // Create and configure execution button
 var myButton = ui.Button({
-  label: 'Run Analysis',
+  label: 'Run Waterline Extraction',
   style: {
     width: '90px',
     height: '30px'
