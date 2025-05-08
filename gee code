@@ -1,0 +1,210 @@
+// Define region of interest (ROI) for analysis
+var roi = roi2;
+Map.centerObject(roi, 10); // Zoom level set to 10
+
+// Visualization parameters for water index display
+var visParams = { 
+  min: -1, 
+  max: 1, 
+  palette: ['green', 'white', 'blue'] 
+};
+
+// Load Sentinel-2 TOA reflectance data using custom module
+var S2 = require("users/957954636/function:/Sentinel2"); 
+
+// Process Sentinel-2 data for the specified time period
+var dataset0 = S2.S2TOA('2017-11-01', '2018-11-01', 3, 11, point, roi, 10, 3);
+
+var dataset = dataset0["c1"]; 
+var dataset_cloudy = dataset0["c2"]; 
+
+// Print datasets to console for verification
+print('Good dataset:', dataset);
+print('Cloudy dataset:', dataset_cloudy);
+
+// Display first image in RGB composite
+Map.addLayer(dataset.first(), { 
+  min: 0.0,  
+  max: 0.3,  
+  bands: ['B8', 'B4', 'B3'] 
+}, 'RGB Composite', true);
+
+
+
+// Focus on Modified Normalized Difference Water Index (MNDWI)
+dataset = dataset.select('mndwi');
+
+// Initialize feature collection to store shoreline results
+var waterLines;
+
+// Create GUI panel for interactive execution
+var panel = ui.Panel({
+  style: {width: '120px'}
+});
+
+// Create and configure execution button
+var myButton = ui.Button({
+  label: 'Run Analysis',
+  style: {
+    width: '90px',
+    height: '30px'
+  }
+});
+
+// Add button to panel and set click handler
+panel.add(myButton);
+myButton.onClick(main);
+Map.add(panel); // Add panel to map interface
+
+/**
+ * Main processing function for shoreline extraction
+ */
+function main() {
+  // Get image count and convert to list
+  var num = dataset.size().getInfo();
+  var imageList = dataset.toList(num);
+  
+  for (var i = 0; i < num; i++) {
+    // Get current image and metadata
+    var indexImage = ee.Image(imageList.get(i)).clip(roi);
+    var imageDate = ee.Date(indexImage.get('system:time_start'));
+    var imageIndex = indexImage.get('system:index');
+    var dateString = imageDate.format("YYYY-MM-dd hh:mm");
+    
+    // Calculate optimal threshold using Otsu's method
+    var threshold = otsu(indexImage);
+    
+    // Convert to binary water/land mask
+    var waterLand = indexImage.gt(threshold);
+    
+    // Smooth classification results and remove small patches
+    var waterMask = smoothWaterClassification(waterLand);
+    
+    // Display intermediate results
+    Map.addLayer(waterMask, visParams, "Water Mask", false);
+    Map.addLayer(indexImage, visParams, "MNDWI", false);
+    
+    // Convert raster to vector polygons
+    var shoreline = waterMask.reduceToVectors({
+      reducer: ee.Reducer.countEvery(),
+      geometry: roi,
+      scale: 10,
+      geometryType: 'polygon',
+      eightConnected: true
+    }).filterBounds(point); // Filter to relevant area
+    
+    // Display vector results
+    Map.addLayer(shoreline, {palette: ['red']}, "Shoreline Vector", false);
+    
+    // Attach temporal metadata
+    shoreline = shoreline.first().set('datetime', dateString);
+    
+    // Initialize or append to feature collection
+    if (i === 0) {
+      waterLines = ee.Algorithms.Collection([shoreline]);
+    } else {
+      waterLines = waterLines.merge(ee.Algorithms.Collection([shoreline]));
+    }
+  } // End image processing loop
+  
+  // Output final shoreline collection
+  print('Shoreline Features:', waterLines);
+  exportShorelineData(waterLines, "Diaokouhe_2016"); // Export as shapefile
+}
+
+/**
+ * Smooth water classification results by:
+ * 1. Mode filtering to reduce noise
+ * 2. Removing small disconnected patches (<200 pixels)
+ * @param {ee.Image} input - Binary water/land mask
+ * @return {ee.Image} Cleaned water mask
+ */
+function smoothWaterClassification(input) {
+  // Mode filter for noise reduction
+  var smoothMap = input.focal_mode({
+    radius: 10,
+    kernelType: 'octagon',
+    units: 'pixels',
+    iterations: 1
+  }).mask(input.gte(0));
+  
+  // Remove small features and apply smoothing
+  var smoothedMask = input
+    .updateMask(input.connectedPixelCount(200, true).gte(200))
+    .unmask(smoothMap)
+    .selfMask();
+  
+  return smoothedMask;
+}
+
+/**
+ * Calculate optimal threshold using Otsu's algorithm
+ * @param {ee.Image} input - Input water index image
+ * @return {Number} Optimal threshold value
+ */
+function otsu(input) {
+  // Generate histogram for threshold calculation
+  var histogram = input.reduceRegion({
+    reducer: ee.Reducer.histogram(1000, 0.01),
+    geometry: roi,
+    scale: 30,
+    bestEffort: true
+  });
+  
+  return calculateOtsuThreshold(histogram.get(histogram.keys().get(0)));
+}
+
+/**
+ * Core Otsu's algorithm implementation
+ * @param {ee.Dictionary} histogram - Input histogram data
+ * @return {Number} Calculated threshold
+ */
+function calculateOtsuThreshold(histogram) {
+  var counts = ee.Array(ee.Dictionary(histogram).get('histogram')); // Pixel counts
+  var means = ee.Array(ee.Dictionary(histogram).get('bucketMeans')); // Intensity values
+  var size = means.length().get([0]); // Number of bins
+  
+  // Total pixels and global mean calculation
+  var totalPixels = counts.reduce(ee.Reducer.sum(), [0]).get([0]);
+  var totalSum = means.multiply(counts).reduce(ee.Reducer.sum(), [0]).get([0]);
+  var globalMean = totalSum.divide(totalPixels);
+  
+  // Generate all possible thresholds and calculate between-class variance
+  var indices = ee.List.sequence(1, size);
+  var betweenClassVariances = indices.map(function(i) {
+    var foregroundCounts = counts.slice(0, 0, i);
+    var foregroundTotal = foregroundCounts.reduce(ee.Reducer.sum(), [0]).get([0]);
+    var foregroundMean = foregroundCounts.multiply(means.slice(0, 0, i))
+      .reduce(ee.Reducer.sum(), [0]).get([0])
+      .divide(foregroundTotal);
+    
+    var backgroundMean = totalSum.subtract(foregroundTotal.multiply(foregroundMean))
+      .divide(totalPixels.subtract(foregroundTotal));
+    
+    return foregroundTotal.multiply(
+      foregroundMean.subtract(globalMean).pow(2)
+    ).add(
+      totalPixels.subtract(foregroundTotal).multiply(
+        backgroundMean.subtract(globalMean).pow(2)
+      )
+    );
+  });
+  
+  // Return threshold maximizing between-class variance
+  return means.sort(betweenClassVariances).get([-1]);
+}
+
+/**
+ * Export shoreline features to Google Drive as shapefile
+ * @param {ee.FeatureCollection} features - Input features to export
+ * @param {String} prefix - Output file name prefix
+ */
+function exportShorelineData(features, prefix) {
+  Export.table.toDrive({
+    collection: ee.FeatureCollection(features),
+    description: prefix + '_Export', // Task name
+    fileNamePrefix: prefix, // Shapefile name
+    fileFormat: 'SHP',
+    folder: 'YRD_Shoreline' // Target folder
+  });
+}
