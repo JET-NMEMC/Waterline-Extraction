@@ -12,8 +12,8 @@ var visParams = {
 // Load Sentinel-2 TOA reflectance data using custom module
 var S2 = require("users/957954636/function:/Sentinel2"); 
 
-// Process Sentinel-2 data for the specified time period
-var dataset0 = S2.S2TOA('2017-11-01', '2018-11-01', 3, 11, point, roi, 10, 3);
+// Process Sentinel-2 data using CCROI
+var dataset0 = S2.S2TOA('2017-11-01', '2018-11-01', 3, 11, point, roi, 100, 2);
 
 var dataset = dataset0["c1"]; 
 var dataset_cloudy = dataset0["c2"]; 
