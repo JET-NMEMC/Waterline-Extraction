@@ -26,7 +26,14 @@ print('Cloudy dataset:', dataset_cloudy);
 Map.addLayer(dataset.first(), { 
   min: 0.0,  
   max: 0.3,  
-  bands: ['B8', 'B4', 'B3'] 
+  bands: ['B4', 'B3', 'B2'] 
+}, 'RGB Composite', true);
+
+// Display first cloudy image in RGB composite
+Map.addLayer(dataset_cloudy.first(), { 
+  min: 0.0,  
+  max: 0.3,  
+  bands: ['B4', 'B3', 'B2'] 
 }, 'RGB Composite', true);
 
 
